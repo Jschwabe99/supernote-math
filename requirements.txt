@@ -1,0 +1,20 @@
+# requirements.txt for supernote-math project
+
+# --- Pinned versions crucial for PosFormer/PyTorch 1.8.1 ---
+# Note: numpy is installed separately *before* torch in the Dockerfile
+# Note: torch and torchvision are installed separately using -f flag in Dockerfile
+pytorch-lightning==1.4.9
+torchmetrics==0.6.0
+Pillow==8.4.0
+
+# --- Other dependencies (pin more strictly if issues arise) ---
+opencv-python<=4.7.0   # Compatible with Py3.7
+einops<=0.4.1          # Compatible with Py3.7
+typer<=0.9.0           # Compatible with Py3.7
+matplotlib<=3.5.3      # Compatible with Py3.7
+sympy                  # Generally compatible, pin e.g. <=1.9 if needed
+
+# --- Dependencies already installed in Dockerfile ---
+# numpy==1.19.5
+# torch==1.8.1
+# torchvision==0.9.1
