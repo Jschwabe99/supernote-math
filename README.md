@@ -1,19 +1,25 @@
-# Supernote Math Recognition Project
+# Supernote Math Recognition & Solver
 
-A mathematical expression recognition system for the Supernote Nomad e-ink tablet, using the PosFormer model.
+A desktop application that recognizes and solves handwritten mathematical expressions from the Supernote Nomad e-ink tablet, using the PosFormer model and SymPy.
 
 ## Project Overview
 
-This project implements an efficient pipeline for recognizing handwritten mathematical expressions from Supernote devices. It handles the preprocessing of images to standardize the format required by the PosFormer model and provides a Docker-based solution for consistent execution across platforms.
+This project provides a macOS desktop application that recognizes handwritten mathematical expressions from Supernote PNG exports and solves them. It leverages the PosFormer model for mathematical expression recognition and SymPy for symbolic computation. The core functionality includes:
+
+1. Image preprocessing to standardize exported Supernote math images
+2. Mathematical expression recognition using PosFormer AI
+3. Conversion of recognized expressions to SymPy format
+4. Solving equations or evaluating arithmetic expressions
+5. Presenting the solution to the user
 
 ## Features
 
+- Simple Mac desktop interface for importing Supernote equation images
 - Enhanced preprocessing pipeline for handwritten math images
 - Support for both Supernote (black-on-white) and CROHME (white-on-black) formats
-- Docker container for isolated execution
-- Integration with the PosFormer model for mathematical expression recognition
-- Comprehensive testing and benchmarking tools
-- CROHME dataset evaluation capabilities
+- Equation solving capabilities using SymPy
+- Arithmetic evaluation for expressions without variables
+- Docker-based development environment
 
 ## Project Structure
 
@@ -35,7 +41,7 @@ supernote-math/
 
 ## Quick Start
 
-### Installation
+### Development Environment Setup
 
 1. Clone the repository:
 ```bash
@@ -43,26 +49,34 @@ git clone https://github.com/yourusername/supernote-math.git
 cd supernote-math
 ```
 
-2. Build the Docker container:
+2. Build the Docker container (for development and testing):
 ```bash
-./scripts/docker/get-docker.sh
+./build_container.sh
 ```
 
-### Usage
+### Running the Application
 
-#### Process Supernote Images
+#### Mac Desktop Application
+```bash
+# Run the desktop app
+python app/main.py
+```
+
+#### Development and Testing
+
+##### Test with Sample Supernote Images
 ```bash
 ./scripts/solution/final_working_solution.sh
 ```
 
-#### Test with CROHME Dataset
+##### Evaluate with CROHME Dataset
 ```bash
-./scripts/crohme/run_crohme_docker.sh
+./run_long_crohme_test.sh
 ```
 
-#### Run Enhanced Preprocessing
+##### Test Equation Solving Module
 ```bash
-./scripts/preprocessing/fixed_enhanced_preprocessing.sh
+python -m tests.core.solver.test_sympy_solver
 ```
 
 ## Performance

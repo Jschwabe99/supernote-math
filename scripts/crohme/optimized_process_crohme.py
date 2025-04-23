@@ -154,14 +154,23 @@ def enhanced_preprocessing(image, target_resolution=(256, 1024), is_crohme=False
     return canvas.reshape(target_h, target_w, 1)
 
 def run_inference(model, tensor, mask):
-    """Run inference with the model using GPU if available"""
+    """Run inference with the model using available hardware acceleration"""
     try:
-        # Use GPU if available
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if device.type == "cuda":
-            tensor = tensor.to(device)
-            mask = mask.to(device)
-            model = model.to(device)
+        # Check for hardware acceleration
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+            
+        # Move tensors and model to the appropriate device
+        tensor = tensor.to(device)
+        mask = mask.to(device)
+        model = model.to(device)
+        
+        # Measure inference time
+        start_time = time.time()
         
         with torch.no_grad():
             hypotheses = model.beam_search(
@@ -173,18 +182,21 @@ def run_inference(model, tensor, mask):
                 early_stopping=True,
                 temperature=1.0
             )
+        
+        # Calculate inference time    
+        inference_time = time.time() - start_time
             
-            if hypotheses:
-                results = []
-                for i, hyp in enumerate(hypotheses[:3]):  # Get top 3 results
-                    latex = vocab.indices2label(hyp.seq)
-                    score = float(hyp.score)
-                    results.append((latex, score))
-                return results
-            else:
-                return [("No results", 0.0)]
+        if hypotheses:
+            results = []
+            for i, hyp in enumerate(hypotheses[:3]):  # Get top 3 results
+                latex = vocab.indices2label(hyp.seq)
+                score = float(hyp.score)
+                results.append((latex, score))
+            return results, inference_time
+        else:
+            return [("No results", 0.0)], inference_time
     except Exception as e:
-        return [(f"Error: {str(e)}", 0.0)]
+        return [(f"Error: {str(e)}", 0.0)], 0.0
 
 # Use a cache system for image extraction to avoid processing the same image multiple times
 @lru_cache(maxsize=32)
@@ -263,17 +275,70 @@ def main():
     
     # Load PosFormer model
     print("Loading PosFormer model...")
-    checkpoint_path = os.path.join(args.posformer_dir, "lightning_logs/version_0/checkpoints/best.ckpt")
-    if not os.path.exists(checkpoint_path):
-        print(f"Error: Checkpoint not found at {checkpoint_path}")
+    # Try the CPU checkpoint first, then fall back to original checkpoint
+    cpu_checkpoint_path = os.path.join(args.posformer_dir, "lightning_logs/version_0/checkpoints/best_cpu.ckpt")
+    original_checkpoint_path = os.path.join(args.posformer_dir, "lightning_logs/version_0/checkpoints/best.ckpt")
+    
+    # Also try absolute path as a fallback
+    fixed_cpu_path = "/Users/julian/Coding/Supernote Project/PosFormer-main/lightning_logs/version_0/checkpoints/best_cpu.ckpt"
+    fixed_original_path = "/Users/julian/Coding/Supernote Project/PosFormer-main/lightning_logs/version_0/checkpoints/best.ckpt"
+    
+    print(f"Looking for CPU checkpoint at: {cpu_checkpoint_path}")
+    print(f"Alternative CPU path: {fixed_cpu_path}")
+    print(f"Original checkpoint path: {original_checkpoint_path}")
+    
+    # Try the checkpoints in order of preference
+    checkpoint_path = None
+    
+    # First try CPU checkpoint (relative path)
+    if os.path.exists(cpu_checkpoint_path):
+        print(f"Using CPU checkpoint at: {cpu_checkpoint_path}")
+        checkpoint_path = cpu_checkpoint_path
+    
+    # Then try CPU checkpoint (absolute path)
+    elif os.path.exists(fixed_cpu_path):
+        print(f"Using CPU checkpoint at absolute path: {fixed_cpu_path}")
+        checkpoint_path = fixed_cpu_path
+    
+    # Fall back to original checkpoint (relative path)
+    elif os.path.exists(original_checkpoint_path):
+        print(f"Using original checkpoint at: {original_checkpoint_path}")
+        checkpoint_path = original_checkpoint_path
+    
+    # Finally try original checkpoint (absolute path)
+    elif os.path.exists(fixed_original_path):
+        print(f"Using original checkpoint at absolute path: {fixed_original_path}")
+        checkpoint_path = fixed_original_path
+    
+    # Exit if no checkpoint is found
+    else:
+        print(f"Error: No checkpoint found at any of the searched paths")
         sys.exit(1)
     
-    # Detect if GPU is available
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Detect available hardware acceleration (CUDA, MPS, or CPU)
+    if torch.cuda.is_available():
+        device = "cuda"
+        print("CUDA GPU acceleration available")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = "mps"
+        print("Apple Metal Performance Shaders (MPS) acceleration available")
+    else:
+        device = "cpu"
+        print("No hardware acceleration available, using CPU")
+        
     print(f"Using device: {device}")
         
     try:
-        lit_model = LitPosFormer.load_from_checkpoint(checkpoint_path, map_location=device)
+        # Always load checkpoint with map_location='cpu' first, then transfer to the target device
+        # This avoids issues with CUDA deserializing on non-CUDA machines
+        print(f"Loading checkpoint with map_location='cpu' for compatibility...")
+        lit_model = LitPosFormer.load_from_checkpoint(checkpoint_path, map_location='cpu')
+        
+        # Now move the model to the target device if needed
+        if device != 'cpu':
+            print(f"Moving model to {device} device...")
+            lit_model = lit_model.to(device)
+            
         model = lit_model.model
         model.eval()
         print("Model loaded successfully!")
@@ -300,23 +365,39 @@ def main():
     # Based on README.md, columns are "image" and "label"
     for year in years_to_try:
         parquet_path = os.path.join(args.crohme_dir, f"data/{year}-00000-of-00001.parquet")
+        fixed_path = f"/Users/julian/Coding/Supernote Project/supernote-math/CROHME-full/data/{year}-00000-of-00001.parquet"
+        
+        print(f"Looking for CROHME {year} dataset at: {parquet_path}")
+        print(f"Alternative path: {fixed_path}")
+        
+        # Try default path first
+        path_to_use = None
         if os.path.exists(parquet_path):
-            try:
-                # Load the parquet file using pandas with pyarrow engine
-                test_df = pd.read_parquet(parquet_path, engine="pyarrow")
-                test_year = year
-                print(f"Successfully loaded CROHME {year} dataset with {len(test_df)} samples")
+            print(f"Found parquet file at: {parquet_path}")
+            path_to_use = parquet_path
+        elif os.path.exists(fixed_path):
+            print(f"Found parquet file at alternative path: {fixed_path}")
+            path_to_use = fixed_path
+        else:
+            print(f"Could not find CROHME {year} dataset at either path")
+            continue
+            
+        try:
+            # Load the parquet file using pandas with pyarrow engine
+            test_df = pd.read_parquet(path_to_use, engine="pyarrow")
+            test_year = year
+            print(f"Successfully loaded CROHME {year} dataset with {len(test_df)} samples")
+            
+            # Display dataframe column information
+            print("Dataframe columns:", test_df.columns.tolist())
+            print("Column types:")
+            for col in test_df.columns:
+                print(f"  {col}: {test_df[col].dtype}")
                 
-                # Display dataframe column information
-                print("Dataframe columns:", test_df.columns.tolist())
-                print("Column types:")
-                for col in test_df.columns:
-                    print(f"  {col}: {test_df[col].dtype}")
-                    
-                break
-            except Exception as e:
-                print(f"Error loading {year} parquet file: {e}")
-                continue
+            break
+        except Exception as e:
+            print(f"Error loading {year} parquet file: {e}")
+            continue
 
     if test_df is None:
         print("Failed to load any CROHME dataset. Exiting.")

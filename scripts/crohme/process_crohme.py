@@ -10,13 +10,15 @@ from PIL import Image
 import pandas as pd
 import time
 import cv2
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 import io
 import base64
 import random
 import argparse
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 
 # Add parent directory to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -81,7 +83,12 @@ def enhanced_preprocessing(image, target_resolution=(256, 1024), is_crohme=False
         gray = image.copy()
     
     # Apply CLAHE to improve contrast (helps with faint strokes)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    # Use LRU cache for CLAHE object to avoid recreating it
+    @lru_cache(maxsize=1)
+    def get_clahe():
+        return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    
+    clahe = get_clahe()
     enhanced = clahe.apply(gray)
     
     # Handle different dataset formats
@@ -92,8 +99,12 @@ def enhanced_preprocessing(image, target_resolution=(256, 1024), is_crohme=False
         # Supernote handwriting is black on white, invert to get white on black
         _, binary = cv2.threshold(enhanced, 220, 255, cv2.THRESH_BINARY_INV)
     
-    # Thicken the strokes
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    # Thicken the strokes - cache the kernel for performance
+    @lru_cache(maxsize=1)
+    def get_kernel():
+        return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    
+    kernel = get_kernel()
     dilated = cv2.dilate(binary, kernel, iterations=2)
     
     # Find content region (using the dilated image)
@@ -141,8 +152,15 @@ def enhanced_preprocessing(image, target_resolution=(256, 1024), is_crohme=False
     return canvas.reshape(target_h, target_w, 1)
 
 def run_inference(model, tensor, mask):
-    """Run inference with the model"""
+    """Run inference with the model using GPU if available"""
     try:
+        # Use GPU if available
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device.type == "cuda":
+            tensor = tensor.to(device)
+            mask = mask.to(device)
+            model = model.to(device)
+        
         with torch.no_grad():
             hypotheses = model.beam_search(
                 tensor,
@@ -166,7 +184,8 @@ def run_inference(model, tensor, mask):
     except Exception as e:
         return [(f"Error: {str(e)}", 0.0)]
 
-def extract_image_from_dict(image_dict):
+@lru_cache(maxsize=32)  # Cache recent image extractions
+def extract_image_from_dict(image_dict_str):
     """
     Extract image from dictionary format used in CROHME parquet files
     The dict typically has format like:
@@ -176,7 +195,19 @@ def extract_image_from_dict(image_dict):
         'height': 123,    # Optional height
         'width': 456      # Optional width
     }
+    
+    Note: We use a string representation of the dict for caching
     """
+    # Convert string representation back to dict if needed
+    if isinstance(image_dict_str, str):
+        try:
+            image_dict = eval(image_dict_str)
+        except:
+            # If it can't be evaluated, try using it directly
+            image_dict = image_dict_str
+    else:
+        image_dict = image_dict_str
+    
     if not isinstance(image_dict, dict):
         return None
         
@@ -229,13 +260,54 @@ def extract_image_from_dict(image_dict):
 def main():
     # Load PosFormer model
     print("Loading PosFormer model...")
-    checkpoint_path = os.path.join(args.posformer_dir, "lightning_logs/version_0/checkpoints/best.ckpt")
-    if not os.path.exists(checkpoint_path):
-        print(f"Error: Checkpoint not found at {checkpoint_path}")
+    
+    # Try CPU checkpoint first, then fall back to original
+    cpu_checkpoint_path = os.path.join(args.posformer_dir, "lightning_logs/version_0/checkpoints/best_cpu.ckpt")
+    original_checkpoint_path = os.path.join(args.posformer_dir, "lightning_logs/version_0/checkpoints/best.ckpt")
+    
+    # Also try absolute paths as fallbacks
+    fixed_cpu_path = "/Users/julian/Coding/Supernote Project/PosFormer-main/lightning_logs/version_0/checkpoints/best_cpu.ckpt"
+    fixed_original_path = "/Users/julian/Coding/Supernote Project/PosFormer-main/lightning_logs/version_0/checkpoints/best.ckpt"
+    
+    # Check each path in order of preference
+    if os.path.exists(cpu_checkpoint_path):
+        print(f"Using CPU checkpoint: {cpu_checkpoint_path}")
+        checkpoint_path = cpu_checkpoint_path
+    elif os.path.exists(fixed_cpu_path):
+        print(f"Using CPU checkpoint (absolute path): {fixed_cpu_path}")
+        checkpoint_path = fixed_cpu_path
+    elif os.path.exists(original_checkpoint_path):
+        print(f"Using original checkpoint: {original_checkpoint_path}")
+        checkpoint_path = original_checkpoint_path
+    elif os.path.exists(fixed_original_path):
+        print(f"Using original checkpoint (absolute path): {fixed_original_path}")
+        checkpoint_path = fixed_original_path
+    else:
+        print(f"Error: No checkpoint found in any of the expected locations")
         sys.exit(1)
+    
+    # Detect available hardware acceleration
+    if torch.cuda.is_available():
+        device = "cuda"
+        print("CUDA GPU acceleration available")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = "mps"
+        print("Apple Metal Performance Shaders (MPS) acceleration available")
+    else:
+        device = "cpu"
+        print("No hardware acceleration available, using CPU")
+    print(f"Using device: {device}")
         
     try:
-        lit_model = LitPosFormer.load_from_checkpoint(checkpoint_path, map_location="cpu")
+        # Always load with CPU mapping first for compatibility
+        print(f"Loading checkpoint with map_location='cpu' for compatibility...")
+        lit_model = LitPosFormer.load_from_checkpoint(checkpoint_path, map_location='cpu')
+        
+        # Then move to target device if needed
+        if device != 'cpu':
+            print(f"Moving model to {device} device...")
+            lit_model = lit_model.to(device)
+            
         model = lit_model.model
         model.eval()
         print("Model loaded successfully!")

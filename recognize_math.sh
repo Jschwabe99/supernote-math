@@ -1,1 +1,1 @@
-scripts/solution/final_working_solution.sh
+recognize_math_venv.sh
